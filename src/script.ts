@@ -1,5 +1,6 @@
 //#region constants
 import {
+    CommentResponse,
     CreatorStatus,
     CreatorVideosResponse,
     FloatplaneSource,
@@ -24,6 +25,7 @@ const SUBSCRIPTIONS_URL = `${BASE_API_URL}/v3/user/subscriptions` as const
 const POST_URL = `${BASE_API_URL}/v3/content/post` as const
 const DELIVERY_URL = `${BASE_API_URL}/v3/delivery/info` as const
 const LIST_URL = `${BASE_API_URL}/v3/content/creator/list` as const
+const COMMENTS_URL = `${BASE_API_URL}/v3/comment` as const
 
 const HARDCODED_ZERO = 0
 const HARDCODED_EMPTY_STRING = ""
@@ -49,6 +51,7 @@ const local_source: FloatplaneSource = {
     getHome,
     isContentDetailsUrl,
     getContentDetails,
+    getComments,
     // @ts-expect-error getUserSubscriptions returns PlatformChannel[] instead of string[]
     getUserSubscriptions,
 }
@@ -305,6 +308,71 @@ function getUserSubscriptions(): string[] {
     }
 
     return channels
+}
+
+function getComments(url: string): FloatplaneCommentPager {
+    const post_id = url.split("/").pop()
+    if (!post_id) {
+        throw new ScriptException("Invalid URL")
+    }
+    return new FloatplaneCommentPager(post_id, 20)
+}
+
+class FloatplaneCommentPager extends ContentPager {
+    private fetchAfter: string | null = null
+    override results: PlatformComment[]
+
+    constructor(private postId: string, private limit: number) {
+        const url = new URL(COMMENTS_URL)
+        url.searchParams.set("blogPost", postId)
+        url.searchParams.set("limit", limit.toString())
+
+        const response = JSON.parse(local_http.GET(url.toString(), {}, true).body) as CommentResponse[]
+        const results = response.map(comment => FloatplaneCommentPager.createPlatformComment(postId, comment))
+
+        super(results, response.length === limit)
+        this.results = results
+        if (response.length > 0) {
+            this.fetchAfter = response[response.length - 1]?.id ?? ""
+        }
+    }
+
+    override nextPage(): FloatplaneCommentPager {
+        if (!this.fetchAfter) return this
+
+        const url = new URL(COMMENTS_URL)
+        url.searchParams.set("blogPost", this.postId)
+        url.searchParams.set("limit", this.limit.toString())
+        url.searchParams.set("fetchAfter", this.fetchAfter)
+
+        const response = JSON.parse(local_http.GET(url.toString(), {}, true).body) as CommentResponse[]
+        const results = response.map(comment => FloatplaneCommentPager.createPlatformComment(this.postId, comment))
+
+        this.hasMore = response.length === this.limit
+        this.results = results
+        if (response.length > 0) {
+            this.fetchAfter = response[response.length - 1]?.id ?? ""
+        }
+
+        return this
+    }
+
+    private static createPlatformComment(postId: string, comment: CommentResponse): PlatformComment {
+        return new PlatformComment({
+            contextUrl: `${PLATFORM_URL}/post/${postId}`,
+            author: new PlatformAuthorLink(
+                new PlatformID(PLATFORM, comment.user.id, plugin.config.id),
+                comment.user.username,
+                `${PLATFORM_URL}/user/${comment.user.id}`,
+                comment.user.profileImage?.path ?? ""
+            ),
+            message: comment.text,
+            date: new Date(comment.postDate).getTime() / 1000,
+            rating: new RatingLikesDislikes(comment.likes, comment.dislikes),
+            replyCount: comment.totalReplies,
+            getReplies: () => new CommentPager([], false)
+        })
+    }
 }
 
 function create_video_source(

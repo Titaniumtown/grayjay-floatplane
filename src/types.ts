@@ -254,3 +254,55 @@ export type CreatorStatus = {
     readonly blogPostId: string
 }
 //#endregion
+
+//#region Comments
+export type CommentResponse = {
+    readonly id: string
+    readonly blogPost: string
+    readonly user: CommentUser
+    readonly text: string
+    readonly replying: string
+    readonly postDate: string
+    readonly editDate: string
+    readonly pinDate: string | null
+    readonly editCount: number
+    readonly isEdited: boolean
+    readonly likes: number
+    readonly dislikes: number
+    readonly score: number
+    readonly interactionCounts: InteractionCounts
+    readonly totalReplies: number
+    readonly replies: CommentReply[]
+    readonly userInteraction: ("like" | "dislike")[]
+}
+
+export type CommentReply = {
+    readonly id: string
+    readonly blogPost: string
+    readonly user: CommentUser
+    readonly text: string
+    readonly replying: string
+    readonly postDate: string
+    readonly editDate: string
+    readonly pinDate: string | null
+    readonly editCount: number
+    readonly isEdited: boolean
+    readonly likes: number
+    readonly dislikes: number
+    readonly score: number
+    readonly interactionCounts: InteractionCounts
+    readonly totalReplies: number
+    readonly userInteraction: ("like" | "dislike")[]
+}
+
+type CommentUser = {
+    readonly id: string
+    readonly username: string
+    readonly profileImage: ParentImage
+}
+
+type InteractionCounts = {
+    readonly like: number
+    readonly dislike: number
+}
+//#endregion

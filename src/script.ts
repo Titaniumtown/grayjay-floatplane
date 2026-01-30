@@ -29,6 +29,8 @@ const DELIVERY_URL = `${BASE_API_URL}/v3/delivery/info` as const
 const LIST_URL = `${BASE_API_URL}/v3/content/creator/list` as const
 const COMMENTS_URL = `${BASE_API_URL}/v3/comment` as const
 const SEARCH_URL = `${BASE_API_URL}/v3/search` as const
+// const CREATOR_INFO_URL = `${BASE_API_URL}/v3/creator/info` as const
+const CHANNEL_URL_PATTERN = /^https?:\/\/(www\.)?floatplane\.com\/channel\/[\w-]+/i
 
 const HARDCODED_ZERO = 0
 const HARDCODED_EMPTY_STRING = ""
@@ -59,6 +61,10 @@ const local_source: FloatplaneSource = {
     getUserSubscriptions,
     getSearchCapabilities,
     search,
+    isChannelUrl,
+    getChannel,
+    getChannelCapabilities,
+    getChannelContents,
 }
 init_source(local_source)
 function init_source<
@@ -461,6 +467,116 @@ function create_platform_video_from_search(blog: SearchBlogPost): PlatformVideo 
         shareUrl: PLATFORM_URL + "/post/" + blog.id,
         isLive: false
     })
+}
+
+function isChannelUrl(url: string): boolean {
+    return CHANNEL_URL_PATTERN.test(url)
+}
+
+function getChannel(channelUrl: string): PlatformChannel {
+    const urlname = channelUrl.match(CHANNEL_URL_PATTERN)?.[0]?.split("/").pop() ?? ""
+
+    if (!urlname) {
+        throw new ScriptException(`Invalid channel URL: ${channelUrl}`)
+    }
+
+    const api_url = new URL(`${BASE_API_URL}/v3/creator/named`)
+    api_url.searchParams.set("creatorURL", urlname)
+
+    try {
+        const response = JSON.parse(local_http.GET(api_url.toString(), {}, true).body)
+
+        const creator = Array.isArray(response) ? response[0] : response
+        if (creator?.id) {
+            return new PlatformChannel({
+                id: new PlatformID(PLATFORM, creator.id, plugin.config.id),
+                name: creator.title,
+                thumbnail: creator.icon?.path ?? "",
+                banner: creator.cover?.path ?? "",
+                subscribers: -1,
+                description: creator.description,
+                url: `${PLATFORM_URL}/channel/${creator.urlname}`,
+                links: {}
+            })
+        }
+    } catch (e) {
+        throw new ScriptException(`Failed to get channel info for ${urlname}: ${String(e)}`)
+    }
+
+    throw new ScriptException(`Channel not found: ${urlname}`)
+}
+
+function getChannelCapabilities(): ResultCapabilities<never, never, never, never> {
+    return {
+        types: ["video"] as never[],
+        sorts: [] as never[],
+        filters: {} as never
+    }
+}
+
+function getChannelContents(channelUrl: string, _type: any | null, _order: any | null, _filters: any): ContentPager {
+    const urlname = channelUrl.match(CHANNEL_URL_PATTERN)?.[0]?.split("/").pop() ?? ""
+    if (!urlname) {
+        return new ContentPager([], false)
+    }
+
+    const namedUrl = new URL(`${BASE_API_URL}/v3/creator/named`)
+    namedUrl.searchParams.set("creatorURL", urlname)
+
+    try {
+        const creatorResponse = JSON.parse(local_http.GET(namedUrl.toString(), {}, true).body)
+        const creator = Array.isArray(creatorResponse) ? creatorResponse[0] : creatorResponse
+        if (!creator?.id) {
+            return new ContentPager([], false)
+        }
+
+        const listUrl = new URL(LIST_URL)
+        listUrl.searchParams.set("limit", "20")
+        listUrl.searchParams.set("ids[0]", creator.id)
+
+        const response: CreatorVideosResponse = JSON.parse(local_http.GET(listUrl.toString(), {}, true).body)
+        const results = response.blogPosts.map(create_platform_video).filter(x => x !== null)
+        const hasMore = response.lastElements.some(e => e.moreFetchable)
+
+        return new ChannelContentPager(creator.id, response.lastElements, results, hasMore)
+    } catch (e) {
+        log(`Failed to get channel contents for ${urlname}: ${String(e)}`)
+        return new ContentPager([], false)
+    }
+}
+
+class ChannelContentPager extends ContentPager {
+    private lastElements: CreatorStatus[]
+    constructor(
+        private readonly creatorId: string,
+        lastElements: CreatorStatus[],
+        results: PlatformVideo[],
+        hasMore: boolean
+    ) {
+        super(results, hasMore)
+        this.lastElements = lastElements
+    }
+    override nextPage(this: ChannelContentPager) {
+        const url = new URL(LIST_URL)
+        url.searchParams.set("limit", "20")
+        url.searchParams.set("ids[0]", this.creatorId)
+
+        const lastEl = this.lastElements.find(e => e.creatorId === this.creatorId)
+        if (lastEl?.blogPostId) {
+            url.searchParams.set("fetchAfter[0][creatorId]", this.creatorId)
+            url.searchParams.set("fetchAfter[0][blogPostId]", lastEl.blogPostId)
+            url.searchParams.set("fetchAfter[0][moreFetchable]", lastEl.moreFetchable.toString())
+        }
+
+        const response: CreatorVideosResponse = JSON.parse(local_http.GET(url.toString(), {}, true).body)
+        this.lastElements = response.lastElements
+        this.hasMore = response.lastElements.some(e => e.moreFetchable)
+        this.results = response.blogPosts.map(create_platform_video).filter(x => x !== null)
+        return this
+    }
+    override hasMorePagers(this: ChannelContentPager): boolean {
+        return this.hasMore
+    }
 }
 
 function create_video_source(

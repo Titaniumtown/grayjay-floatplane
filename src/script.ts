@@ -49,6 +49,8 @@ const local_source: FloatplaneSource = {
     getHome,
     isContentDetailsUrl,
     getContentDetails,
+    // @ts-expect-error getUserSubscriptions returns PlatformChannel[] instead of string[]
+    getUserSubscriptions,
 }
 init_source(local_source)
 function init_source<
@@ -275,6 +277,36 @@ function getContentDetails(url: string): PlatformContentDetails {
 
     throw new ScriptException("Content type not supported")
 }
+
+function getUserSubscriptions(): string[] {
+    if (!bridge.isLoggedIn()) {
+        throw new LoginRequiredException("login to import subscriptions")
+    }
+
+    const response = JSON.parse(
+        local_http.GET(SUBSCRIPTIONS_URL, { "User-Agent": USER_AGENT }, true).body
+    ) as SubscriptionResponse[]
+
+    const channels: string[] = []
+
+    for (const sub of response) {
+        try {
+            const creatorUrl = new URL(`${BASE_API_URL}/v3/creator/info`)
+            creatorUrl.searchParams.set("id", sub.creator)
+
+            const creator = JSON.parse(
+                local_http.GET(creatorUrl.toString(), {}, true).body
+            )
+
+            channels.push(`${PLATFORM_URL}/channel/${creator.urlname}`)
+        } catch (e) {
+            log(`Failed to get creator info for ${sub.creator}: ${String(e)}`)
+        }
+    }
+
+    return channels
+}
+
 function create_video_source(
     duration: number,
     origin: string,

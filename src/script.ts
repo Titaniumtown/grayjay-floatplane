@@ -190,7 +190,31 @@ class HomePager extends ContentPager {
             has_more ||= data.moreFetchable
         }
 
-        const results = response.blogPosts.map(create_platform_video).filter(x => x !== null)
+        const livestreams: PlatformVideo[] = []
+        for (const post of response.blogPosts) {
+            if (post.creator.liveStream && !post.creator.liveStream.offline) {
+                livestreams.push(new PlatformVideo({
+                    id: new PlatformID(PLATFORM, post.creator.liveStream.id, plugin.config.id),
+                    name: `[LIVE] ${post.creator.liveStream.title}`,
+                    thumbnails: new Thumbnails([new Thumbnail(post.creator.liveStream.thumbnail?.path ?? "", 0)]),
+                    author: new PlatformAuthorLink(
+                        new PlatformID(PLATFORM, post.creator.id, plugin.config.id),
+                        post.creator.title,
+                        `${PLATFORM_URL}/channel/${post.creator.urlname}`,
+                        post.creator.icon?.path ?? ""
+                    ),
+                    datetime: Date.now() / 1000,
+                    duration: 0,
+                    viewCount: 0,
+                    url: `${PLATFORM_URL}/live/${post.creator.urlname}?id=${post.creator.liveStream.id}`,
+                    shareUrl: `${PLATFORM_URL}/live/${post.creator.urlname}?id=${post.creator.liveStream.id}`,
+                    isLive: true
+                }))
+            }
+        }
+
+        const videoResults = response.blogPosts.map(create_platform_video).filter(x => x !== null)
+        const results = [...livestreams, ...videoResults]
 
         super(results, has_more)
         this.creators = creators

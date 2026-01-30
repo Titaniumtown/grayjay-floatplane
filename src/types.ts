@@ -253,6 +253,37 @@ export type CreatorStatus = {
     readonly creatorId: string
     readonly blogPostId: string
 }
+
+export type SearchResponse = {
+    readonly creators: SearchCreator[]
+    readonly blogPosts: SearchBlogPost[]
+}
+
+export type SearchCreator = {
+    readonly id: string
+    readonly title: string
+    readonly urlname: string
+    readonly description: string
+    readonly icon: ParentImage | null
+}
+
+export type SearchBlogPost = {
+    readonly id: string
+    readonly title: string
+    readonly text: string
+    readonly creator: SearchCreator
+    readonly thumbnail: ParentImage | null
+}
+
+export type SearchCapabilities = {
+    readonly creators: boolean
+    readonly blogPosts: boolean
+}
+
+export type SearchFilter = {
+    readonly creators?: boolean
+    readonly blogPosts?: boolean
+}
 //#endregion
 
 //#region Comments

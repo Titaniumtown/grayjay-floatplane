@@ -8,6 +8,8 @@ import {
     DeliveryVariant,
     ParentImage,
     Post,
+    SearchBlogPost,
+    SearchResponse,
     SubscriptionResponse,
     VideoAttachment,
     MediaType,
@@ -26,6 +28,7 @@ const POST_URL = `${BASE_API_URL}/v3/content/post` as const
 const DELIVERY_URL = `${BASE_API_URL}/v3/delivery/info` as const
 const LIST_URL = `${BASE_API_URL}/v3/content/creator/list` as const
 const COMMENTS_URL = `${BASE_API_URL}/v3/comment` as const
+const SEARCH_URL = `${BASE_API_URL}/v3/search` as const
 
 const HARDCODED_ZERO = 0
 const HARDCODED_EMPTY_STRING = ""
@@ -54,6 +57,8 @@ const local_source: FloatplaneSource = {
     getComments,
     // @ts-expect-error getUserSubscriptions returns PlatformChannel[] instead of string[]
     getUserSubscriptions,
+    getSearchCapabilities,
+    search,
 }
 init_source(local_source)
 function init_source<
@@ -373,6 +378,89 @@ class FloatplaneCommentPager extends ContentPager {
             getReplies: () => new CommentPager([], false)
         })
     }
+}
+
+function getSearchCapabilities(): ResultCapabilities<never, never, never, never> {
+    return {
+        types: ["creators", "blogPosts"] as never[],
+        sorts: [] as never[],
+        filters: {} as never
+    }
+}
+
+function search(_query: string, _type: any | null, _order: any | null, _filters: any): ContentPager {
+    if (!bridge.isLoggedIn()) {
+        throw new LoginRequiredException("login to search")
+    }
+
+    const url = new URL(SEARCH_URL)
+    url.searchParams.set("q", _query)
+    url.searchParams.set("limit", "50")
+
+    const response: SearchResponse = JSON.parse(local_http.GET(url.toString(), {}, true).body)
+
+    const results = response.blogPosts.map(create_platform_video_from_search).filter(x => x !== null)
+
+    return new SearchPager(response, results, {})
+}
+
+class SearchPager extends ContentPager {
+    private response: SearchResponse
+
+    constructor(response: SearchResponse, initialResults: PlatformVideo[], _filter: unknown) {
+        super(initialResults, false)
+        this.response = response
+    }
+
+    override nextPage(): SearchPager {
+        const url = new URL(SEARCH_URL)
+        url.searchParams.set("q", "")
+        url.searchParams.set("limit", "50")
+
+        let has_more = false
+
+        this.response.creators.forEach((creator) => {
+            url.searchParams.set(`creators[${has_more.toString()}]`, creator.id)
+            has_more = true
+        })
+
+        this.response.blogPosts.forEach((post) => {
+            url.searchParams.set(`blogPosts[${has_more.toString()}]`, post.id)
+            has_more = true
+        })
+
+        this.response = JSON.parse(local_http.GET(url.toString(), {}, true).body) as SearchResponse
+        this.results = this.response.blogPosts.map(create_platform_video_from_search).filter(x => x !== null)
+        this.hasMore = has_more
+
+        return this
+    }
+}
+
+function create_platform_video_from_search(blog: SearchBlogPost): PlatformVideo | null {
+    if (!blog.thumbnail) {
+        return null
+    }
+
+    return new PlatformVideo({
+        id: new PlatformID("Floatplane", blog.id, plugin.config.id),
+        name: blog.title,
+        thumbnails: new Thumbnails([blog.thumbnail].map(
+            (t) => new Thumbnail(t.path, t.height)
+        )),
+        author: new PlatformAuthorLink(
+            new PlatformID("Floatplane", blog.creator.id, plugin.config.id),
+            blog.creator.title,
+            PLATFORM_URL + "/channel/" + blog.creator.urlname,
+            blog.creator.icon?.path ?? ""
+        ),
+        datetime: 0,
+        duration: 0,
+        viewCount: 0,
+        url: PLATFORM_URL + "/post/" + blog.id,
+        shareUrl: PLATFORM_URL + "/post/" + blog.id,
+        isLive: false
+    })
 }
 
 function create_video_source(

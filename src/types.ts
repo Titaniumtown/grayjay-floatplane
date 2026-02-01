@@ -26,10 +26,7 @@ export type FloatplaneSource = Required<Omit<Source<
     | "getChannelPlaylists"
     | "getPlaybackTracker"
     | "getUserPlaylists"
-    | "getUserSubscriptions"
     | "getContentRecommendations"
-    | "isChannelUrl"
-    | "getChannel"
     | "getShorts"
 >>
 
@@ -252,5 +249,13 @@ export type CreatorStatus = {
     readonly moreFetchable: boolean
     readonly creatorId: string
     readonly blogPostId: string
+}
+export type CreatorInfoResponse = {
+    readonly id: string
+    readonly title: string
+    readonly urlname: string
+    readonly description: string
+    readonly icon: ParentImage | null
+    readonly cover: ParentImage | null
 }
 //#endregion

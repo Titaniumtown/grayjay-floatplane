@@ -1,10 +1,10 @@
 //#region custom types
 export type FloatplaneSource = Required<Omit<
     Source<
-        never, never, never, never,
+        never, never, never[], never,
         never, never, never, Settings
     >,
-    "searchSuggestions" | "getSubComments" | "getSearchChannelContentsCapabilities" | "getLiveChatWindow" | "searchChannelContents" | "search" | "getSearchCapabilities" | "getChannelContents" | "getChannelCapabilities" | "searchChannels" | "isPlaylistUrl" | "getPlaylist" | "searchPlaylists" | "getChannelPlaylists" | "getPlaybackTracker" | "getUserPlaylists" | "getUserSubscriptions" | "getContentRecommendations" | "isChannelUrl" | "getChannel" | "getShorts"
+    "searchSuggestions" | "getSubComments" | "getSearchChannelContentsCapabilities" | "getLiveChatWindow" | "searchChannelContents" | "searchChannels" | "isPlaylistUrl" | "getPlaylist" | "searchPlaylists" | "getChannelPlaylists" | "getPlaybackTracker" | "getUserPlaylists" | "getContentRecommendations" | "getShorts"
 >>
 
 export type Settings = {

@@ -7,6 +7,7 @@ import {
     CreatorVideosResponse,
     Delivery,
     DeliveryVariant,
+    FloatplaneSource,
     ParentImage,
     Post,
     SearchBlogPost,
@@ -66,8 +67,52 @@ function parseJSON<T>(json: string): T {
 //#endregion
 
 //#region source methods
-source.enable = function(_conf: SourceConfig, settings: unknown, saved_state?: string | null) {
-    local_settings = parseJSON<Settings>(JSON.stringify(settings))
+const local_source: FloatplaneSource = {
+    enable,
+    disable,
+    saveState,
+    getHome,
+    isContentDetailsUrl,
+    getContentDetails,
+    getComments,
+    getUserSubscriptions,
+    getSearchCapabilities,
+    search,
+    isChannelUrl,
+    getChannel,
+    getChannelCapabilities,
+    getChannelContents,
+}
+init_source(local_source)
+function init_source<
+    ChannelTypes extends never,
+    SearchTypes extends never,
+    ChannelSearchTypes extends never
+>(local_source: Source<never, never, never[], never, ChannelTypes, SearchTypes, ChannelSearchTypes, Settings>) {
+    for (const method_key of Object.keys(local_source)) {
+        // @ts-expect-error assign to readonly constant source object
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        source[method_key] = local_source[method_key]
+    }
+}
+// Grayjay calls this when the user taps replies, after the V8 runtime
+// that created getReplies has been closed. The comment is serialized JSON
+// with contextUrl containing the postId and commentId.
+Object.defineProperty(source, "getSubComments", {
+    value(comment: { context?: { postId?: string; commentId?: string } }): CommentPager {
+        const postId = comment.context?.postId
+        const commentId = comment.context?.commentId
+        if (!postId || !commentId) {
+            throw new ScriptException("getSubComments: missing context. Keys: " + JSON.stringify(Object.keys(comment)))
+        }
+        return new FloatplaneReplyPager(postId, commentId, 20)
+    }
+})
+//#endregion
+
+//#region enable
+function enable(_conf: SourceConfig, settings: Settings, saved_state?: string | null) {
+    local_settings = settings
 
     let client_id: string | null = null
     try {
@@ -84,13 +129,16 @@ source.enable = function(_conf: SourceConfig, settings: unknown, saved_state?: s
         local_state = { client_id }
     }
 }
-source.disable = function() {
+function disable() {
     log("Floatplane log: disabling")
 }
-source.saveState = function() {
+function saveState() {
     return JSON.stringify(local_state)
 }
-source.getHome = function(): ContentPager {
+//#endregion
+
+//#region home
+function getHome(): ContentPager {
     if (!bridge.isLoggedIn()) {
         throw new LoginRequiredException("login to watch floatplane - use web login or enter sails.sid cookie in settings")
     }
@@ -100,10 +148,147 @@ source.getHome = function(): ContentPager {
     const pager = new HomePager(response.map(c => c.creator), limit)
     return pager
 }
-source.isContentDetailsUrl = function(url: string) {
+//#endregion
+
+//#region creator
+function isChannelUrl(url: string): boolean {
+    return CHANNEL_URL_PATTERN.test(url)
+}
+function getChannel(channelUrl: string): PlatformChannel {
+    const urlname = channelUrl.match(CHANNEL_URL_PATTERN)?.[0]?.split("/").pop() ?? ""
+
+    if (!urlname) {
+        throw new ScriptException(`Invalid channel URL: ${channelUrl}`)
+    }
+
+    const api_url = new URL(`${BASE_API_URL}/v3/creator/named`)
+    api_url.searchParams.set("creatorURL", urlname)
+
+    try {
+        const response = parseJSON<CreatorInfoResponse | CreatorInfoResponse[]>(local_http.GET(api_url.toString(), getAuthHeaders(), true).body)
+
+        const creator = Array.isArray(response) ? response[0] : response
+        if (creator?.id) {
+            return new PlatformChannel({
+                id: new PlatformID(PLATFORM, creator.id, plugin.config.id),
+                name: creator.title,
+                thumbnail: creator.icon?.path ?? "",
+                banner: creator.cover?.path ?? "",
+                subscribers: -1,
+                description: creator.description,
+                url: `${PLATFORM_URL}/channel/${creator.urlname}`,
+                links: {}
+            })
+        }
+    } catch (e) {
+        throw new ScriptException(`Failed to get channel info for ${urlname}: ${String(e)}`)
+    }
+
+    throw new ScriptException(`Channel not found: ${urlname}`)
+}
+function getChannelCapabilities() {
+    return new ResultCapabilities([], [], [])
+}
+function getChannelContents(channelUrl: string, _type: unknown, _order: unknown, _filters: unknown): ContentPager {
+    const urlname = channelUrl.match(CHANNEL_URL_PATTERN)?.[0]?.split("/").pop() ?? ""
+    if (!urlname) {
+        return new ContentPager([], false)
+    }
+
+    // Look up creator ID from URL name
+    const namedUrl = new URL(`${BASE_API_URL}/v3/creator/named`)
+    namedUrl.searchParams.set("creatorURL", urlname)
+
+    try {
+        const creatorResponse = parseJSON<CreatorInfoResponse | CreatorInfoResponse[]>(local_http.GET(namedUrl.toString(), getAuthHeaders(), true).body)
+        const creator = Array.isArray(creatorResponse) ? creatorResponse[0] : creatorResponse
+        if (!creator?.id) {
+            return new ContentPager([], false)
+        }
+
+        const listUrl = new URL(LIST_URL)
+        listUrl.searchParams.set("limit", "20")
+        listUrl.searchParams.set("ids[0]", creator.id)
+
+        const response = parseJSON<CreatorVideosResponse>(local_http.GET(listUrl.toString(), getAuthHeaders(), true).body)
+        const results = response.blogPosts.map(create_platform_video).filter(x => x !== null)
+        const hasMore = response.lastElements.some(e => e.moreFetchable)
+
+        return new ChannelContentPager(creator.id, response.lastElements, results, hasMore)
+    } catch (e) {
+        log(`Failed to get channel contents for ${urlname}: ${String(e)}`)
+        return new ContentPager([], false)
+    }
+}
+//#endregion
+
+//#region user
+function getUserSubscriptions(): string[] {
+    if (!bridge.isLoggedIn()) {
+        throw new LoginRequiredException("login to import subscriptions")
+    }
+
+    const response = parseJSON<SubscriptionResponse[]>(
+        local_http.GET(SUBSCRIPTIONS_URL, getAuthHeaders(), true).body
+    )
+
+    const channels: string[] = []
+
+    for (const sub of response) {
+        try {
+            const creatorUrl = new URL(`${BASE_API_URL}/v3/creator/info`)
+            creatorUrl.searchParams.set("id", sub.creator)
+
+            const creator = parseJSON<CreatorInfoResponse>(
+                local_http.GET(creatorUrl.toString(), getAuthHeaders(), true).body
+            )
+
+            channels.push(`${PLATFORM_URL}/channel/${creator.urlname}`)
+        } catch (e) {
+            log(`Failed to get creator info for ${sub.creator}: ${String(e)}`)
+        }
+    }
+
+    return channels
+}
+//#endregion
+
+//#region search
+function getSearchCapabilities() {
+    return new ResultCapabilities([], [], [])
+}
+function search(query: string, _type: unknown, _order: unknown, _filters: unknown): ContentPager {
+    if (!bridge.isLoggedIn()) {
+        throw new LoginRequiredException("login to search")
+    }
+
+    const url = new URL(SEARCH_URL)
+    url.searchParams.set("q", query)
+    url.searchParams.set("limit", "50")
+
+    const response = parseJSON<SearchResponse>(local_http.GET(url.toString(), getAuthHeaders(), true).body)
+
+    const results = response.blogPosts.map(create_platform_video_from_search).filter(x => x !== null)
+
+    return new SearchPager(response, results, {})
+}
+//#endregion
+
+//#region comments
+function getComments(url: string): CommentPager {
+    const post_id = url.split("/").pop()
+    if (!post_id) {
+        throw new ScriptException("Invalid URL")
+    }
+    return new FloatplaneCommentPager(post_id, 20)
+}
+//#endregion
+
+//#region content
+function isContentDetailsUrl(url: string) {
     return /^https?:\/\/(www\.)?floatplane\.com\/post\/[\w\d]+$/.test(url)
 }
-source.getContentDetails = function(url: string): PlatformContentDetails {
+function getContentDetails(url: string): PlatformContentDetails {
     if (!bridge.isLoggedIn()) {
         throw new LoginRequiredException("login to watch floatplane")
     }
@@ -160,141 +345,6 @@ source.getContentDetails = function(url: string): PlatformContentDetails {
     }
 
     throw new ScriptException("Content type not supported")
-}
-source.getComments = function(url: string): FloatplaneCommentPager {
-    const post_id = url.split("/").pop()
-    if (!post_id) {
-        throw new ScriptException("Invalid URL")
-    }
-    return new FloatplaneCommentPager(post_id, 20)
-};
-// Grayjay calls this when the user taps replies, after the V8 runtime
-// that created getReplies has been closed. The comment is serialized JSON
-// with contextUrl containing the postId and commentId.
-Object.defineProperty(source, "getSubComments", {
-    value(comment: { context?: { postId?: string; commentId?: string } }): CommentPager {
-        const postId = comment.context?.postId
-        const commentId = comment.context?.commentId
-        if (!postId || !commentId) {
-            throw new ScriptException("getSubComments: missing context. Keys: " + JSON.stringify(Object.keys(comment)))
-        }
-        return new FloatplaneReplyPager(postId, commentId, 20)
-    }
-})
-source.getUserSubscriptions = function(): string[] {
-    if (!bridge.isLoggedIn()) {
-        throw new LoginRequiredException("login to import subscriptions")
-    }
-
-    const response = parseJSON<SubscriptionResponse[]>(
-        local_http.GET(SUBSCRIPTIONS_URL, getAuthHeaders(), true).body
-    )
-
-    const channels: string[] = []
-
-    for (const sub of response) {
-        try {
-            const creatorUrl = new URL(`${BASE_API_URL}/v3/creator/info`)
-            creatorUrl.searchParams.set("id", sub.creator)
-
-            const creator = parseJSON<CreatorInfoResponse>(
-                local_http.GET(creatorUrl.toString(), getAuthHeaders(), true).body
-            )
-
-            channels.push(`${PLATFORM_URL}/channel/${creator.urlname}`)
-        } catch (e) {
-            log(`Failed to get creator info for ${sub.creator}: ${String(e)}`)
-        }
-    }
-
-    return channels
-}
-source.getSearchCapabilities = function() {
-    return new ResultCapabilities([], [], [])
-}
-source.search = function(_query: string, _type, _order, _filters): ContentPager {
-    if (!bridge.isLoggedIn()) {
-        throw new LoginRequiredException("login to search")
-    }
-
-    const url = new URL(SEARCH_URL)
-    url.searchParams.set("q", _query)
-    url.searchParams.set("limit", "50")
-
-    const response = parseJSON<SearchResponse>(local_http.GET(url.toString(), getAuthHeaders(), true).body)
-
-    const results = response.blogPosts.map(create_platform_video_from_search).filter(x => x !== null)
-
-    return new SearchPager(response, results, {})
-}
-source.isChannelUrl = function(url: string): boolean {
-    return CHANNEL_URL_PATTERN.test(url)
-}
-source.getChannel = function(channelUrl: string): PlatformChannel {
-    const urlname = channelUrl.match(CHANNEL_URL_PATTERN)?.[0]?.split("/").pop() ?? ""
-
-    if (!urlname) {
-        throw new ScriptException(`Invalid channel URL: ${channelUrl}`)
-    }
-
-    const api_url = new URL(`${BASE_API_URL}/v3/creator/named`)
-    api_url.searchParams.set("creatorURL", urlname)
-
-    try {
-        const response = parseJSON<CreatorInfoResponse | CreatorInfoResponse[]>(local_http.GET(api_url.toString(), getAuthHeaders(), true).body)
-
-        const creator = Array.isArray(response) ? response[0] : response
-        if (creator?.id) {
-            return new PlatformChannel({
-                id: new PlatformID(PLATFORM, creator.id, plugin.config.id),
-                name: creator.title,
-                thumbnail: creator.icon?.path ?? "",
-                banner: creator.cover?.path ?? "",
-                subscribers: -1,
-                description: creator.description,
-                url: `${PLATFORM_URL}/channel/${creator.urlname}`,
-                links: {}
-            })
-        }
-    } catch (e) {
-        throw new ScriptException(`Failed to get channel info for ${urlname}: ${String(e)}`)
-    }
-
-    throw new ScriptException(`Channel not found: ${urlname}`)
-}
-source.getChannelCapabilities = function() {
-    return new ResultCapabilities([], [], [])
-}
-source.getChannelContents = function(channelUrl: string, _type, _order, _filters): ContentPager {
-    const urlname = channelUrl.match(CHANNEL_URL_PATTERN)?.[0]?.split("/").pop() ?? ""
-    if (!urlname) {
-        return new ContentPager([], false)
-    }
-
-    // Look up creator ID from URL name
-    const namedUrl = new URL(`${BASE_API_URL}/v3/creator/named`)
-    namedUrl.searchParams.set("creatorURL", urlname)
-
-    try {
-        const creatorResponse = parseJSON<CreatorInfoResponse | CreatorInfoResponse[]>(local_http.GET(namedUrl.toString(), getAuthHeaders(), true).body)
-        const creator = Array.isArray(creatorResponse) ? creatorResponse[0] : creatorResponse
-        if (!creator?.id) {
-            return new ContentPager([], false)
-        }
-
-        const listUrl = new URL(LIST_URL)
-        listUrl.searchParams.set("limit", "20")
-        listUrl.searchParams.set("ids[0]", creator.id)
-
-        const response = parseJSON<CreatorVideosResponse>(local_http.GET(listUrl.toString(), getAuthHeaders(), true).body)
-        const results = response.blogPosts.map(create_platform_video).filter(x => x !== null)
-        const hasMore = response.lastElements.some(e => e.moreFetchable)
-
-        return new ChannelContentPager(creator.id, response.lastElements, results, hasMore)
-    } catch (e) {
-        log(`Failed to get channel contents for ${urlname}: ${String(e)}`)
-        return new ContentPager([], false)
-    }
 }
 //#endregion
 

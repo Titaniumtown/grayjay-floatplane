@@ -130,7 +130,7 @@ function enable(_conf: SourceConfig, settings: Settings, saved_state?: string | 
     }
 }
 function disable() {
-    log("Floatplane log: disabling")
+    log(`${PLATFORM} log: disabling`)
 }
 function saveState() {
     return JSON.stringify(local_state)
@@ -315,7 +315,7 @@ function getContentDetails(url: string): PlatformContentDetails {
             description: response.text,
             thumbnails: create_thumbnails(response.thumbnail),
             author: new PlatformAuthorLink(
-                new PlatformID(PLATFORM, response.channel.creator + ":" + response.channel.id, plugin.config.id),
+              new PlatformID(PLATFORM, `${response.channel.creator}:${response.channel.id}`, plugin.config.id),
                 response.channel.title,
                 ChannelUrlFromBlog(response),
                 response.channel.icon?.path ?? ""
@@ -323,8 +323,8 @@ function getContentDetails(url: string): PlatformContentDetails {
             datetime: new Date(response.releaseDate).getTime() / 1000,
             duration: response.metadata.videoDuration,
             viewCount: HARDCODED_ZERO,
-            url: PLATFORM_URL + "/post/" + response.id,
-            shareUrl: PLATFORM_URL + "/post/" + response.id,
+            url: `${PLATFORM_URL}/post/${response.id}`,
+            shareUrl: `${PLATFORM_URL}/post/${response.id}`,
             isLive: false,
             video: videos,
             rating: new RatingLikesDislikes(response.likes, response.dislikes),
@@ -365,7 +365,7 @@ function create_platform_video(blog: Post): PlatformVideo | null {
             name: blog.title,
             thumbnails: create_thumbnails(blog.thumbnail),
             author: new PlatformAuthorLink(
-                new PlatformID(PLATFORM, blog.channel.creator + ":" + blog.channel.id, plugin.config.id),
+              new PlatformID(PLATFORM, `${blog.channel.creator}:${blog.channel.id}`, plugin.config.id),
                 blog.channel.title,
                 ChannelUrlFromBlog(blog),
                 blog.channel.icon?.path ?? ""
@@ -373,8 +373,8 @@ function create_platform_video(blog: Post): PlatformVideo | null {
             datetime: new Date(blog.releaseDate).getTime() / 1000,
             duration: blog.metadata.videoDuration,
             viewCount: 0,
-            url: PLATFORM_URL + "/post/" + blog.id,
-            shareUrl: PLATFORM_URL + "/post/" + blog.id,
+            url: `${PLATFORM_URL}/post/${blog.id}`,
+            shareUrl: `${PLATFORM_URL}/post/${blog.id}`,
             isLive: false
         })
     }
@@ -387,7 +387,7 @@ function create_platform_video(blog: Post): PlatformVideo | null {
     return null
 }
 function ChannelUrlFromBlog(blog: Post): string {
-    return PLATFORM_URL + "/channel/" + blog.creator.urlname + "/home/" + blog.channel.urlname
+  return `${PLATFORM_URL}/channel/${blog.creator.urlname}/home/${blog.channel.urlname}`
 }
 
 class HomePager extends ContentPager {
@@ -660,22 +660,22 @@ function create_platform_video_from_search(blog: SearchBlogPost): PlatformVideo 
     }
 
     return new PlatformVideo({
-        id: new PlatformID("Floatplane", blog.id, plugin.config.id),
+        id: new PlatformID(PLATFORM, blog.id, plugin.config.id),
         name: blog.title,
         thumbnails: new Thumbnails([blog.thumbnail].map(
             (t) => new Thumbnail(t.path, t.height)
         )),
         author: new PlatformAuthorLink(
-            new PlatformID("Floatplane", blog.creator.id, plugin.config.id),
+            new PlatformID(PLATFORM, blog.creator.id, plugin.config.id),
             blog.creator.title,
-            PLATFORM_URL + "/channel/" + blog.creator.urlname,
+            `${PLATFORM_URL}/channel/${blog.creator.urlname}`,
             blog.creator.icon?.path ?? ""
         ),
         datetime: 0,
         duration: 0,
         viewCount: 0,
-        url: PLATFORM_URL + "/post/" + blog.id,
-        shareUrl: PLATFORM_URL + "/post/" + blog.id,
+        url: `${PLATFORM_URL}/post/${blog.id}`,
+        shareUrl: `${PLATFORM_URL}/post/${blog.id}`,
         isLive: false
     })
 }
@@ -828,7 +828,7 @@ function get_format(setting: StreamFormat): MediaType {
 function assert_exhaustive(value: never): void
 function assert_exhaustive(value: never, exception_message: string): ScriptException
 function assert_exhaustive(value: never, exception_message?: string): ScriptException | undefined {
-    log(["Floatplane log:", value])
+    log([`${PLATFORM} log:`, value])
     if (exception_message !== undefined) {
         return new ScriptException(exception_message)
     }

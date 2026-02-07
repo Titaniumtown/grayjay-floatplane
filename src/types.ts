@@ -19,7 +19,7 @@ export const enum StreamFormat {
 }
 
 export type State = {
-    readonly client_id: string | null
+    readonly client_id: string
 }
 
 export type MediaType = "hls.fmp4" | "hls.mpegts" | "flat"

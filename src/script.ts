@@ -32,12 +32,12 @@ const LIST_URL = `${BASE_API_URL}/v3/content/creator/list` as const
 const COMMENTS_URL = `${BASE_API_URL}/v3/comment` as const
 const COMMENT_REPLIES_URL = `${BASE_API_URL}/v3/comment/replies` as const
 const SEARCH_URL = `${BASE_API_URL}/v3/search` as const
-// const CREATOR_INFO_URL = `${BASE_API_URL}/v3/creator/info` as const
-const CHANNEL_URL_PATTERN = /^https?:\/\/(www\.)?floatplane\.com\/channel\/[\w-]+/i
+const CREATOR_NAMED_URL = `${BASE_API_URL}/v3/creator/named` as const
+const CREATOR_INFO_URL = `${BASE_API_URL}/v3/creator/info` as const
+const CHANNEL_URL_REGEX = /^https?:\/\/(?:www\.)?floatplane\.com\/channel\/([\w-]+)/i
+const POST_URL_REGEX = /^https?:\/\/(?:www\.)?floatplane\.com\/post\/([\w\d]+)$/
 
 const HARDCODED_ZERO = 0
-const HARDCODED_EMPTY_STRING = ""
-function EMPTY_AUTHOR() { return new PlatformAuthorLink(new PlatformID(PLATFORM, "", plugin.config.id), "", "") }
 
 // this API reference makes everything super easy
 // https://jman012.github.io/FloatplaneAPIDocs/SwaggerUI-full/
@@ -50,18 +50,14 @@ let local_settings: Settings
 /** State */
 let local_state: State
 
-/** Helper function to get auth headers */
-function getAuthHeaders(): Record<string, string> {
-    return {
-        "User-Agent": USER_AGENT
-    }
+function post_url(postId: string): string {
+    return `${PLATFORM_URL}/post/${postId}`
 }
-
-/** Type-safe wrapper around JSON.parse. Centralizes the unavoidable any-to-T cast. */
-// eslint-disable-next-line @typescript-eslint/no-unnecessary-type-parameters
-function parseJSON<T>(json: string): T {
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-return
-    return JSON.parse(json)
+function channel_url(urlname: string): string {
+    return `${PLATFORM_URL}/channel/${urlname}`
+}
+function user_url(userId: string): string {
+    return `${PLATFORM_URL}/user/${userId}`
 }
 
 //#endregion
@@ -95,35 +91,20 @@ function init_source<
         source[method_key] = local_source[method_key]
     }
 }
-// Grayjay calls this when the user taps replies, after the V8 runtime
-// that created getReplies has been closed. The comment is serialized JSON
-// with contextUrl containing the postId and commentId.
-Object.defineProperty(source, "getSubComments", {
-    value(comment: { context?: { postId?: string; commentId?: string } }): CommentPager {
-        const postId = comment.context?.postId
-        const commentId = comment.context?.commentId
-        if (!postId || !commentId) {
-            throw new ScriptException("getSubComments: missing context. Keys: " + JSON.stringify(Object.keys(comment)))
-        }
-        return new FloatplaneReplyPager(postId, commentId, 20)
-    }
-})
 //#endregion
 
 //#region enable
 function enable(_conf: SourceConfig, settings: Settings, saved_state?: string | null) {
     local_settings = settings
 
-    let client_id: string | null = null
-    try {
-        const cid = local_http.getDefaultClient(true).clientId
-        client_id = cid ?? null
-    } catch (e) {
-        log(`Could not get client_id: ${String(e)}`)
+    const client_id = local_http.getDefaultClient(true).clientId
+    if (client_id === undefined) {
+        throw new ScriptException("missing client id")
     }
 
     if (saved_state !== null && saved_state !== undefined) {
-        const state = parseJSON<State>(saved_state)
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        const state: State = JSON.parse(saved_state)
         local_state = { ...state, client_id }
     } else {
         local_state = { client_id }
@@ -142,7 +123,8 @@ function getHome(): ContentPager {
     if (!bridge.isLoggedIn()) {
         throw new LoginRequiredException(`login to watch ${PLATFORM}`)
     }
-    const response = parseJSON<SubscriptionResponse[]>(local_http.GET(SUBSCRIPTIONS_URL, getAuthHeaders(), true).body)
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+    const response: SubscriptionResponse[] = JSON.parse(local_http.GET(SUBSCRIPTIONS_URL, { "User-Agent": USER_AGENT }, true).body)
 
     const limit = 20
     const pager = new HomePager(response.map(c => c.creator), limit)
@@ -152,73 +134,65 @@ function getHome(): ContentPager {
 
 //#region creator
 function isChannelUrl(url: string): boolean {
-    return CHANNEL_URL_PATTERN.test(url)
+    return CHANNEL_URL_REGEX.test(url)
 }
 function getChannel(channelUrl: string): PlatformChannel {
-    const urlname = channelUrl.match(CHANNEL_URL_PATTERN)?.[0]?.split("/").pop() ?? ""
-
+    const urlname = channelUrl.match(CHANNEL_URL_REGEX)?.[1]
     if (!urlname) {
         throw new ScriptException(`Invalid channel URL: ${channelUrl}`)
     }
 
-    const api_url = new URL(`${BASE_API_URL}/v3/creator/named`)
+    const api_url = new URL(CREATOR_NAMED_URL)
     api_url.searchParams.set("creatorURL", urlname)
 
-    try {
-        const response = parseJSON<CreatorInfoResponse | CreatorInfoResponse[]>(local_http.GET(api_url.toString(), getAuthHeaders(), true).body)
-
-        const creator = Array.isArray(response) ? response[0] : response
-        if (creator?.id) {
-            return new PlatformChannel({
-                id: new PlatformID(PLATFORM, creator.id, plugin.config.id),
-                name: creator.title,
-                thumbnail: creator.icon?.path ?? "",
-                banner: creator.cover?.path ?? "",
-                subscribers: -1,
-                description: creator.description,
-                url: `${PLATFORM_URL}/channel/${creator.urlname}`,
-                links: {}
-            })
-        }
-    } catch (e) {
-        throw new ScriptException(`Failed to get channel info for ${urlname}: ${String(e)}`)
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+    const response: CreatorInfoResponse | CreatorInfoResponse[] = JSON.parse(local_http.GET(api_url.toString(), { "User-Agent": USER_AGENT }, true).body)
+    const creator = Array.isArray(response) ? response[0] : response
+    if (!creator?.id) {
+        throw new ScriptException(`Channel not found: ${urlname}`)
     }
 
-    throw new ScriptException(`Channel not found: ${urlname}`)
+    return new PlatformChannel({
+        id: new PlatformID(PLATFORM, creator.id, plugin.config.id),
+        name: creator.title,
+        thumbnail: creator.icon?.path ?? "",
+        banner: creator.cover?.path ?? "",
+        subscribers: -1,
+        description: creator.description,
+        url: channel_url(creator.urlname),
+        links: {}
+    })
 }
 function getChannelCapabilities() {
     return new ResultCapabilities([], [], [])
 }
 function getChannelContents(channelUrl: string, _type: unknown, _order: unknown, _filters: unknown): ContentPager {
-    const urlname = channelUrl.match(CHANNEL_URL_PATTERN)?.[0]?.split("/").pop() ?? ""
+    const urlname = channelUrl.match(CHANNEL_URL_REGEX)?.[1]
     if (!urlname) {
         return new ContentPager([], false)
     }
 
     // Look up creator ID from URL name
-    const namedUrl = new URL(`${BASE_API_URL}/v3/creator/named`)
+    const namedUrl = new URL(CREATOR_NAMED_URL)
     namedUrl.searchParams.set("creatorURL", urlname)
 
-    try {
-        const creatorResponse = parseJSON<CreatorInfoResponse | CreatorInfoResponse[]>(local_http.GET(namedUrl.toString(), getAuthHeaders(), true).body)
-        const creator = Array.isArray(creatorResponse) ? creatorResponse[0] : creatorResponse
-        if (!creator?.id) {
-            return new ContentPager([], false)
-        }
-
-        const listUrl = new URL(LIST_URL)
-        listUrl.searchParams.set("limit", "20")
-        listUrl.searchParams.set("ids[0]", creator.id)
-
-        const response = parseJSON<CreatorVideosResponse>(local_http.GET(listUrl.toString(), getAuthHeaders(), true).body)
-        const results = response.blogPosts.map(create_platform_video).filter(x => x !== null)
-        const hasMore = response.lastElements.some(e => e.moreFetchable)
-
-        return new ChannelContentPager(creator.id, response.lastElements, results, hasMore)
-    } catch (e) {
-        log(`Failed to get channel contents for ${urlname}: ${String(e)}`)
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+    const creatorResponse: CreatorInfoResponse | CreatorInfoResponse[] = JSON.parse(local_http.GET(namedUrl.toString(), { "User-Agent": USER_AGENT }, true).body)
+    const creator = Array.isArray(creatorResponse) ? creatorResponse[0] : creatorResponse
+    if (!creator?.id) {
         return new ContentPager([], false)
     }
+
+    const listUrl = new URL(LIST_URL)
+    listUrl.searchParams.set("limit", "20")
+    listUrl.searchParams.set("ids[0]", creator.id)
+
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+    const response: CreatorVideosResponse = JSON.parse(local_http.GET(listUrl.toString(), { "User-Agent": USER_AGENT }, true).body)
+    const results = response.blogPosts.map(create_platform_video).filter(x => x !== null)
+    const hasMore = response.lastElements.some(e => e.moreFetchable)
+
+    return new ChannelContentPager(creator.id, response.lastElements, results, hasMore)
 }
 //#endregion
 
@@ -228,25 +202,23 @@ function getUserSubscriptions(): string[] {
         throw new LoginRequiredException("login to import subscriptions")
     }
 
-    const response = parseJSON<SubscriptionResponse[]>(
-        local_http.GET(SUBSCRIPTIONS_URL, getAuthHeaders(), true).body
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+    const response: SubscriptionResponse[] = JSON.parse(
+        local_http.GET(SUBSCRIPTIONS_URL, { "User-Agent": USER_AGENT }, true).body
     )
 
     const channels: string[] = []
 
     for (const sub of response) {
-        try {
-            const creatorUrl = new URL(`${BASE_API_URL}/v3/creator/info`)
-            creatorUrl.searchParams.set("id", sub.creator)
+        const creatorUrl = new URL(CREATOR_INFO_URL)
+        creatorUrl.searchParams.set("id", sub.creator)
 
-            const creator = parseJSON<CreatorInfoResponse>(
-                local_http.GET(creatorUrl.toString(), getAuthHeaders(), true).body
-            )
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        const creator: CreatorInfoResponse = JSON.parse(
+            local_http.GET(creatorUrl.toString(), { "User-Agent": USER_AGENT }, true).body
+        )
 
-            channels.push(`${PLATFORM_URL}/channel/${creator.urlname}`)
-        } catch (e) {
-            log(`Failed to get creator info for ${sub.creator}: ${String(e)}`)
-        }
+        channels.push(channel_url(creator.urlname))
     }
 
     return channels
@@ -266,7 +238,8 @@ function search(query: string, _type: unknown, _order: unknown, _filters: unknow
     url.searchParams.set("q", query)
     url.searchParams.set("limit", "50")
 
-    const response = parseJSON<SearchResponse>(local_http.GET(url.toString(), getAuthHeaders(), true).body)
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+    const response: SearchResponse = JSON.parse(local_http.GET(url.toString(), { "User-Agent": USER_AGENT }, true).body)
 
     const results = response.blogPosts.map(create_platform_video_from_search).filter(x => x !== null)
 
@@ -276,7 +249,7 @@ function search(query: string, _type: unknown, _order: unknown, _filters: unknow
 
 //#region comments
 function getComments(url: string): CommentPager {
-    const post_id = url.split("/").pop()
+    const post_id = url.match(POST_URL_REGEX)?.[1]
     if (!post_id) {
         throw new ScriptException("Invalid URL")
     }
@@ -286,22 +259,22 @@ function getComments(url: string): CommentPager {
 
 //#region content
 function isContentDetailsUrl(url: string) {
-    return /^https?:\/\/(www\.)?floatplane\.com\/post\/[\w\d]+$/.test(url)
+    return POST_URL_REGEX.test(url)
 }
 function getContentDetails(url: string): PlatformContentDetails {
     if (!bridge.isLoggedIn()) {
-        throw new LoginRequiredException("login to watch floatplane")
+        throw new LoginRequiredException(`login to watch ${PLATFORM}`)
     }
-    const post_id: string | undefined = url.split("/").pop()
-
-    if (post_id === undefined) {
-        throw new ScriptException("unreachable")
+    const post_id = url.match(POST_URL_REGEX)?.[1]
+    if (!post_id) {
+        throw new ScriptException(`Invalid post URL: ${url}`)
     }
 
     const api_url = new URL(POST_URL)
     api_url.searchParams.set("id", post_id)
 
-    const response = parseJSON<Post>(local_http.GET(api_url.toString(), {}, true).body)
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+    const response: Post = JSON.parse(local_http.GET(api_url.toString(), {}, true).body)
 
     if (response.metadata.hasVideo) {
         if (response.metadata.hasAudio || response.metadata.hasPicture || response.metadata.hasGallery) {
@@ -323,8 +296,8 @@ function getContentDetails(url: string): PlatformContentDetails {
             datetime: new Date(response.releaseDate).getTime() / 1000,
             duration: response.metadata.videoDuration,
             viewCount: HARDCODED_ZERO,
-            url: `${PLATFORM_URL}/post/${response.id}`,
-            shareUrl: `${PLATFORM_URL}/post/${response.id}`,
+            url: post_url(response.id),
+            shareUrl: post_url(response.id),
             isLive: false,
             video: videos,
             rating: new RatingLikesDislikes(response.likes, response.dislikes),
@@ -373,8 +346,8 @@ function create_platform_video(blog: Post): PlatformVideo | null {
             datetime: new Date(blog.releaseDate).getTime() / 1000,
             duration: blog.metadata.videoDuration,
             viewCount: 0,
-            url: `${PLATFORM_URL}/post/${blog.id}`,
-            shareUrl: `${PLATFORM_URL}/post/${blog.id}`,
+            url: post_url(blog.id),
+            shareUrl: post_url(blog.id),
             isLive: false
         })
     }
@@ -397,7 +370,8 @@ class HomePager extends ContentPager {
         url.searchParams.set("limit", limit.toString())
         creator_ids.forEach((creator_id, index) => { url.searchParams.set(`ids[${index.toString()}]`, creator_id) })
 
-        const response = parseJSON<CreatorVideosResponse>(local_http.GET(url.toString(), getAuthHeaders(), true).body)
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        const response: CreatorVideosResponse = JSON.parse(local_http.GET(url.toString(), { "User-Agent": USER_AGENT }, true).body)
 
         const creators: Record<string, CreatorStatus> = {}
         let has_more = false
@@ -410,6 +384,7 @@ class HomePager extends ContentPager {
         const livestreams: PlatformVideo[] = []
         for (const post of response.blogPosts) {
             if (post.creator.liveStream && !post.creator.liveStream.offline) {
+                const liveStreamUrl = `${PLATFORM_URL}/live/${post.creator.urlname}?id=${post.creator.liveStream.id}`
                 livestreams.push(new PlatformVideo({
                     id: new PlatformID(PLATFORM, post.creator.liveStream.id, plugin.config.id),
                     name: `[LIVE] ${post.creator.liveStream.title}`,
@@ -417,14 +392,14 @@ class HomePager extends ContentPager {
                     author: new PlatformAuthorLink(
                         new PlatformID(PLATFORM, post.creator.id, plugin.config.id),
                         post.creator.title,
-                        `${PLATFORM_URL}/channel/${post.creator.urlname}`,
+                        channel_url(post.creator.urlname),
                         post.creator.icon?.path ?? ""
                     ),
                     datetime: Date.now() / 1000,
                     duration: 0,
                     viewCount: 0,
-                    url: `${PLATFORM_URL}/live/${post.creator.urlname}?id=${post.creator.liveStream.id}`,
-                    shareUrl: `${PLATFORM_URL}/live/${post.creator.urlname}?id=${post.creator.liveStream.id}`,
+                    url: liveStreamUrl,
+                    shareUrl: liveStreamUrl,
                     isLive: true
                 }))
             }
@@ -449,7 +424,8 @@ class HomePager extends ContentPager {
             }
         })
 
-        const response = parseJSON<CreatorVideosResponse>(local_http.GET(url.toString(), getAuthHeaders(), true).body)
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        const response: CreatorVideosResponse = JSON.parse(local_http.GET(url.toString(), { "User-Agent": USER_AGENT }, true).body)
 
         let has_more = false
         for (const data of response.lastElements) {
@@ -489,7 +465,8 @@ class ChannelContentPager extends ContentPager {
             url.searchParams.set("fetchAfter[0][moreFetchable]", lastEl.moreFetchable.toString())
         }
 
-        const response = parseJSON<CreatorVideosResponse>(local_http.GET(url.toString(), getAuthHeaders(), true).body)
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        const response: CreatorVideosResponse = JSON.parse(local_http.GET(url.toString(), { "User-Agent": USER_AGENT }, true).body)
         this.lastElements = response.lastElements
         this.hasMore = response.lastElements.some(e => e.moreFetchable)
         this.results = response.blogPosts.map(create_platform_video).filter(x => x !== null)
@@ -501,7 +478,7 @@ class ChannelContentPager extends ContentPager {
 }
 //#endregion
 
-//#region 
+//#region comment pagers
 class FloatplaneCommentPager extends ContentPager {
     private fetchAfter: string | null = null
     override results: PlatformComment[]
@@ -511,7 +488,8 @@ class FloatplaneCommentPager extends ContentPager {
         url.searchParams.set("blogPost", postId)
         url.searchParams.set("limit", limit.toString())
 
-        const response = parseJSON<CommentResponse[]>(local_http.GET(url.toString(), getAuthHeaders(), true).body)
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        const response: CommentResponse[] = JSON.parse(local_http.GET(url.toString(), { "User-Agent": USER_AGENT }, true).body)
         const results = response.map(comment => FloatplaneCommentPager.createPlatformComment(postId, comment))
 
         super(results, response.length === limit)
@@ -529,7 +507,8 @@ class FloatplaneCommentPager extends ContentPager {
         url.searchParams.set("limit", this.limit.toString())
         url.searchParams.set("fetchAfter", this.fetchAfter)
 
-        const response = parseJSON<CommentResponse[]>(local_http.GET(url.toString(), getAuthHeaders(), true).body)
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        const response: CommentResponse[] = JSON.parse(local_http.GET(url.toString(), { "User-Agent": USER_AGENT }, true).body)
         const results = response.map(comment => FloatplaneCommentPager.createPlatformComment(this.postId, comment))
 
         this.hasMore = response.length === this.limit
@@ -542,25 +521,20 @@ class FloatplaneCommentPager extends ContentPager {
     }
 
     private static createPlatformComment(postId: string, comment: CommentResponse): PlatformComment {
-        const c = new PlatformComment({
-            contextUrl: `${PLATFORM_URL}/post/${postId}`,
+        return new PlatformComment({
+            contextUrl: post_url(postId),
             author: new PlatformAuthorLink(
                 new PlatformID(PLATFORM, comment.user.id, plugin.config.id),
                 comment.user.username,
-                `${PLATFORM_URL}/user/${comment.user.id}`,
+                user_url(comment.user.id),
                 comment.user.profileImage.path
             ),
             message: comment.text,
             date: new Date(comment.postDate).getTime() / 1000,
             rating: new RatingLikesDislikes(comment.likes, comment.dislikes),
             replyCount: comment.totalReplies,
-            getReplies: () => new CommentPager([], false)
+            getReplies: () => new FloatplaneReplyPager(postId, comment.id, 20)
         })
-        Object.defineProperty(c, "context", {
-            value: { postId, commentId: comment.id },
-            enumerable: true
-        })
-        return c
     }
 }
 
@@ -573,7 +547,8 @@ class FloatplaneReplyPager extends CommentPager {
         url.searchParams.set("blogPost", postId)
         url.searchParams.set("limit", limit.toString())
 
-        const response = parseJSON<CommentReply[]>(local_http.GET(url.toString(), getAuthHeaders(), true).body)
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        const response: CommentReply[] = JSON.parse(local_http.GET(url.toString(), { "User-Agent": USER_AGENT }, true).body)
         const results = response.map(reply => FloatplaneReplyPager.createReplyComment(postId, reply))
 
         super(results, response.length === limit)
@@ -591,7 +566,8 @@ class FloatplaneReplyPager extends CommentPager {
         url.searchParams.set("limit", this.limit.toString())
         url.searchParams.set("rid", this.lastReplyId)
 
-        const response = parseJSON<CommentReply[]>(local_http.GET(url.toString(), getAuthHeaders(), true).body)
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        const response: CommentReply[] = JSON.parse(local_http.GET(url.toString(), { "User-Agent": USER_AGENT }, true).body)
         const results = response.map(reply => FloatplaneReplyPager.createReplyComment(this.postId, reply))
 
         this.hasMore = response.length === this.limit
@@ -605,11 +581,11 @@ class FloatplaneReplyPager extends CommentPager {
 
     private static createReplyComment(postId: string, reply: CommentReply): PlatformComment {
         return new PlatformComment({
-            contextUrl: `${PLATFORM_URL}/post/${postId}`,
+            contextUrl: post_url(postId),
             author: new PlatformAuthorLink(
                 new PlatformID(PLATFORM, reply.user.id, plugin.config.id),
                 reply.user.username,
-                `${PLATFORM_URL}/user/${reply.user.id}`,
+                user_url(reply.user.id),
                 reply.user.profileImage.path
             ),
             message: reply.text,
@@ -646,7 +622,8 @@ class SearchPager extends ContentPager {
             has_more = true
         })
 
-        this.response = parseJSON<SearchResponse>(local_http.GET(url.toString(), getAuthHeaders(), true).body)
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        this.response = JSON.parse(local_http.GET(url.toString(), { "User-Agent": USER_AGENT }, true).body)
         this.results = this.response.blogPosts.map(create_platform_video_from_search).filter(x => x !== null)
         this.hasMore = has_more
 
@@ -668,14 +645,14 @@ function create_platform_video_from_search(blog: SearchBlogPost): PlatformVideo 
         author: new PlatformAuthorLink(
             new PlatformID(PLATFORM, blog.creator.id, plugin.config.id),
             blog.creator.title,
-            `${PLATFORM_URL}/channel/${blog.creator.urlname}`,
+            channel_url(blog.creator.urlname),
             blog.creator.icon?.path ?? ""
         ),
         datetime: 0,
         duration: 0,
         viewCount: 0,
-        url: `${PLATFORM_URL}/post/${blog.id}`,
-        shareUrl: `${PLATFORM_URL}/post/${blog.id}`,
+        url: post_url(blog.id),
+        shareUrl: post_url(blog.id),
         isLive: false
     })
 }
@@ -697,13 +674,11 @@ function create_video_source(
                 bitrate: variant.meta.video.bitrate.average,
                 duration,
                 url: `${origin}${variant.url}`,
-                ...(local_state.client_id ? {
-                    requestModifier: {
-                        options: {
-                            applyAuthClient: local_state.client_id
-                        }
+                requestModifier: {
+                    options: {
+                        applyAuthClient: local_state.client_id
                     }
-                } : {})
+                }
             })
         case "hls.fmp4":
             return new HLSSource({
@@ -712,13 +687,11 @@ function create_video_source(
                 duration,
                 priority: true,
                 language: Language.UNKNOWN,
-                ...(local_state.client_id ? {
-                    requestModifier: {
-                        options: {
-                            applyAuthClient: local_state.client_id
-                        }
+                requestModifier: {
+                    options: {
+                        applyAuthClient: local_state.client_id
                     }
-                } : {})
+                }
             })
         case "hls.mpegts":
             return new HLSSource({
@@ -727,13 +700,11 @@ function create_video_source(
                 duration,
                 priority: false,
                 language: Language.UNKNOWN,
-                ...(local_state.client_id ? {
-                    requestModifier: {
-                        options: {
-                            applyAuthClient: local_state.client_id
-                        }
+                requestModifier: {
+                    options: {
+                        applyAuthClient: local_state.client_id
                     }
-                } : {})
+                }
             })
         default:
             throw assert_exhaustive(media_type, "unreachable")
@@ -747,7 +718,8 @@ function create_video_descriptor(attachments: VideoAttachment[]): VideoSourceDes
         url.searchParams.set("entityId", video.id)
         url.searchParams.set("outputKind", media_type)
 
-        const response = parseJSON<Delivery>(local_http.GET(url.toString(), { ...getAuthHeaders(), accept: "application/json" }, true).body)
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        const response: Delivery = JSON.parse(local_http.GET(url.toString(), { "User-Agent": USER_AGENT, accept: "application/json" }, true).body)
         const streamSources = response.groups.flatMap((group) => {
             return group.variants.map((variant) => {
                 const origin = group.origins[0]
@@ -771,35 +743,30 @@ function create_video_descriptor(attachments: VideoAttachment[]): VideoSourceDes
         // HLS downloads fail because the encrypted key URL (/api/video/watchKey)
         // returns HTTP 403 in Grayjay's download worker.
         // Flat MP4 URLs are directly downloadable.
-        try {
-            const dlUrl = new URL(DELIVERY_URL)
-            dlUrl.searchParams.set("scenario", "download")
-            dlUrl.searchParams.set("entityId", video.id)
-            dlUrl.searchParams.set("outputKind", "flat")
+        const dlUrl = new URL(DELIVERY_URL)
+        dlUrl.searchParams.set("scenario", "download")
+        dlUrl.searchParams.set("entityId", video.id)
+        dlUrl.searchParams.set("outputKind", "flat")
 
-            const dlResponse = parseJSON<Delivery>(local_http.GET(dlUrl.toString(), { ...getAuthHeaders(), accept: "application/json" }, true).body)
-            const dlSources = dlResponse.groups.flatMap((group) => {
-                return group.variants.filter(v => v.enabled).map((variant) => {
-                    const origin = group.origins[0]
-                    if (origin === undefined) {
-                        throw new ScriptException("unreachable")
-                    }
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+        const dlResponse: Delivery = JSON.parse(local_http.GET(dlUrl.toString(), { "User-Agent": USER_AGENT, accept: "application/json" }, true).body)
+        const dlSources = dlResponse.groups.flatMap((group) => {
+            return group.variants.filter(v => v.enabled).map((variant) => {
+                const origin = group.origins[0]
+                if (origin === undefined) {
+                    throw new ScriptException("unreachable")
+                }
 
-                    return create_video_source(
-                        video.duration,
-                        origin.url,
-                        variant,
-                        "flat"
-                    )
-                })
+                return create_video_source(
+                    video.duration,
+                    origin.url,
+                    variant,
+                    "flat"
+                )
             })
+        })
 
-            return [...streamSources, ...dlSources]
-        } catch (e) {
-            // Download may be disabled by the video uploader
-            log(`Download sources unavailable for ${video.id}: ${String(e)}`)
-            return streamSources
-        }
+        return [...streamSources, ...dlSources]
     }))
 }
 //#endregion
@@ -836,7 +803,7 @@ function assert_exhaustive(value: never, exception_message?: string): ScriptExce
 }
 //#endregion
 
-console.log(milliseconds_to_WebVTT_timestamp, HARDCODED_EMPTY_STRING, EMPTY_AUTHOR())
+console.log(milliseconds_to_WebVTT_timestamp)
 // export statements are removed during build step
 // used for unit testing in script.test.ts
 export { milliseconds_to_WebVTT_timestamp }

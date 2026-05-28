@@ -61,5 +61,16 @@
         "cookiesToFind": [
             "sails.sid"
         ]
+    },
+    "authenticationDesktop": {
+        "loginUrl": "https://www.floatplane.com/login",
+        "allowedDomains": [
+            "floatplane.com",
+            "www.floatplane.com"
+        ],
+        "cookiesToFind": [
+            "sails.sid"
+        ],
+        "useMobileEmulation": false
     }
 }

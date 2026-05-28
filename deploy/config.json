@@ -57,9 +57,21 @@
             "floatplane.com",
             "www.floatplane.com"
         ],
-        "userAgent": "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+        "userAgent": null,
         "cookiesToFind": [
             "sails.sid"
         ]
+    },
+    "authenticationDesktop": {
+        "loginUrl": "https://www.floatplane.com/login",
+        "allowedDomains": [
+            "floatplane.com",
+            "www.floatplane.com"
+        ],
+        "userAgent": null,
+        "cookiesToFind": [
+            "sails.sid"
+        ],
+        "useMobileEmulation": false
     }
 }

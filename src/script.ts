@@ -737,7 +737,7 @@ function create_video_descriptor(attachments: VideoAttachment[]): VideoSourceDes
         // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         const response: Delivery = JSON.parse(local_http.GET(url.toString(), { "User-Agent": USER_AGENT, accept: "application/json" }, true).body)
         const streamSources = response.groups.flatMap((group) => {
-            return group.variants.map((variant) => {
+            return group.variants.filter(v => v.enabled).map((variant) => {
                 const origin = group.origins[0]
                 if (origin === undefined) {
                     throw new ScriptException("unreachable")
